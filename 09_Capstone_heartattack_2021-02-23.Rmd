@@ -1,0 +1,431 @@
+---
+title: "Data Science Capstone - own project"
+author: "Julia Schröder"
+date: "23/02/2021"
+output: pdf_document
+---
+
+Dataset from kaggle:
+https://www.kaggle.com/nareshbhat/health-care-data-set-on-heart-attack-possibility
+
+
+# Predict likelihood of heart attack
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(echo = FALSE,
+                     warning = FALSE,
+                     message = FALSE,
+                     root.dir = normalizePath("/Users/julia/sciebo/Kurse/2020-03_HarvardX_DataScience/HarvardX_DS/heartattack"))
+
+library(tidyverse)
+library(data.table)
+library(janitor)
+library(caret)
+library(RColorBrewer)
+library(kableExtra)
+library(cowplot)
+
+
+# presets
+# read dataset downloaded from kaggle
+data <- fread("/Users/julia/sciebo/Kurse/2020-03_HarvardX_DataScience/HarvardX_DS/heartattack/heart.csv")
+
+```
+
+
+# 1 Introduction
+## 1.1 Aim of this project  
+The aim of this project was the development and implementation of a machine learning (ML) algorithm to predict a higher or lesser chance of a heart attack. For this, the dataset from the Kaggle project ["Health care: Data set on Heart attack possibility"](https://www.kaggle.com/nareshbhat/health-care-data-set-on-heart-attack-possibility) was used. Five different algorithms were chosen from the Data Science course by HarvardX and their individual accuracy compared before being combined to an ensemble. The final goal was to choose a ML algorithm with the greatest accuracy.  
+
+## 1.2 Description of dataset
+The dataset 'heartattack' contains data from the Cleveland database (https://archive.ics.uci.edu/ml/datasets/Heart+Disease) with 303 measurements of 13 variables and 1 outcome:
+
+1. Age [years]
+2. Sex: 
+  + 0 = female
+  + 1 = male
+3. cp: Chest pain type 
+  + 0 = typical angina
+  + 1 = atypical angina
+  + 2 = non-anginal pain
+  + 3 = asymptomatic
+4. trestbps: Resting blood pressure [mmHg]
+5. chol: Serum cholesterol [mg/dl]
+6. fbs: Fasting blood sugar > 120 mg/dl 
+  + 0 = false
+  + 1 = true
+7. restecg: Resting electrocardiographic results 
+  + 0 = normal
+  + 1 = having ST-T wave abnormality
+  + 2 = shoing probable or definite left ventricular hypertrophy (Estes' criteria)
+8. thalach: Maximum heart rate achieved [bpm]
+9. exang: Exercise induced angina (chest pain)
+  + 0 = false
+  + 1 = true
+10. oldpeak: ST depression induced by exercise relative to rest [mm], a measure of abnormality in electrocardiograms 
+11. slope: Slope of the peak exercise ST segment of the electrocardiogram
+  + 0 = unsloping
+  + 1 = flat
+  + 2 = downsloping
+12. ca: Number of major vessels colored by flourosopy (0-3)
+13. thal: Thallium stress test measuring blood flow to the heart
+  + 0 = normal
+  + 1 = fixed defect
+  + 2 = reversable defect
+14. target: outcome of heart attack
+  + 0 = less chance of heart attack
+  + 1 = more chance of heart attack
+
+
+# 2 Methods
+## 2.1 Data cleaning
+Some of the variables (sex, cp, fbs, restecg, exang, slope, thal, target) are categorical and need to be recoded as factors. The data summary shows that none of the variables include any NAs.  
+```{r data_clean, echo = FALSE}
+# recode categorical variables as factor
+data_clean <- data %>% 
+  mutate(across(
+    .cols = c("sex", "cp", "fbs", "restecg", "exang", "slope", "thal", "target"), 
+    .fns = factor))
+
+# check for NAs
+#sum(is.na(data)) # 0
+
+# check data structure after cleaning
+summary(data_clean)
+head(data_clean) %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+The numerical variables age, resting blood pressure and maximum heart rate are normally distributed. The variable ST depression is not normally distributed, but shows an approximate normal distribution after logarhythmic transformation.
+```{r data_clean, echo = FALSE, warn = FALSE}
+# check distributions of numerical variables
+p1 <- ggplot(data_clean) +
+  geom_density(aes(x = age), col = "black", fill = "lightblue") +
+  theme_minimal() +
+  labs(x = "Age [years]")
+p2 <- ggplot(data_clean) +
+  geom_density(aes(x = trestbps), col = "black", fill = "lightblue") +
+  theme_minimal() +
+  labs(x = "Resting blood pressure [mmHg]")
+p3 <- ggplot(data_clean) +
+  geom_density(aes(x = thalach), col = "black", fill = "lightblue") +
+  theme_minimal() +
+  labs(x = "Maximum heart rate achieved [bpm]")
+p4 <- ggplot(data_clean_nolog) +
+  #geom_density(aes(x = log(oldpeak+min(data_clean$oldpeak[data_clean$oldpeak > 0]))), col = "black", fill = "lightblue") +
+  geom_density(aes(x = oldpeak), col = "black", fill = "lightblue") +
+  theme_minimal() +
+  labs(x = "log(ST depression + c) [mm]")
+plot_grid(p1, p2, p3, p4)
+
+# log transform oldpeak to achieve normality but add constant to avoid log(0)=-Inf
+# constant = minimal non-zero value of variable
+#data_clean_nolog <- data_clean
+#data_clean <- data_clean_nolog
+data_clean$oldpeak <- log(data_clean$oldpeak + min(data_clean$oldpeak[data_clean$oldpeak > 0]))
+#min(data_clean$oldpeak[data_clean$oldpeak > 0])
+
+summary(data_clean_nolog$oldpeak)
+summary(data_clean$oldpeak)
+
+ggplot(data_clean_nolog) +
+  #geom_histogram(aes(x = log(oldpeak+min(data_clean_nolog$oldpeak[data_clean_nolog$oldpeak > 0]))), col = "black", fill = "lightblue") +
+  geom_histogram(aes(x = log(oldpeak+1)), col = "black", fill = "lightblue") +
+  #geom_histogram(aes(x = oldpeak), col = "black", fill = "lightblue") +
+  theme_minimal() +
+  labs(x = "log(ST depression +1) [mm]") +
+  facet_wrap(~ target)
+
+ggplot(data_clean) +
+  geom_point(aes(x = thalach, y = trestbps))+
+  theme_minimal()
+
+# check for linear combinations
+data_clean %>%
+  select_if(., is.numeric) %>% 
+  findLinearCombos()
+# none
+```
+
+The variance of the variables were analyzed and no features with near zero variance were found.
+```{r}
+nzv <- nearZeroVar(data_clean)
+length(nzv)
+
+# check for linear combinations
+data_clean %>%
+  select_if(., is.numeric) %>% 
+  findLinearCombos()
+# none
+```
+
+The correlation of the numerical variables was analyzed and no strong correlation was found. Therefore, all numerical variables are independent of each other.  
+```{r}
+# check correlation of numeric variables
+data_clean %>% 
+  select_if(is.numeric) %>% 
+  cor() %>% 
+  round_half_up(2) %>%
+  kable() %>%
+  kable_styling(full_width = FALSE, position = "center")
+# no strong correlations
+
+featurePlot(x = data_clean[,-c("oldpeak")], y = data_clean[,c("oldpeak")], plot = "pairs")
+```
+
+## 2.2 Data split into training and test set  
+In order to use different sets of data for training and evaluation of the ML algorithms, the cleaned dataset was divided into training and test data in a 90/10 split. In order to evaluate the true functionality of an algorithm, it is important to test it on a separate dataset which has not been used for model training. The split of 90/10, resulting in a training dataset with 90% of the data of the full dataset and a test dataset with the remaining 10%, was chosen to have as much data for training as possible while ensuring that the test dataset is large enough to make a good estimate of the accuracy of the algorithm.
+```{r data_split, echo = FALSE}
+# split data: 90% training + 10% validation
+test_index <- createDataPartition(y = data_clean$target, times = 1, p = 0.1, list = FALSE)
+training_data <- data_clean[-test_index,]
+test_data <- data_clean[test_index,]
+rm(test_index)
+
+
+#data_clean_nolog
+test_index_nolog <- createDataPartition(y = data_clean_nolog$target, times = 1, p = 0.1, list = FALSE)
+training_data_nolog <- data_clean_nolog[-test_index_nolog,]
+test_data_nolog <- data_clean_nolog[test_index_nolog,]
+rm(test_index_nolog)
+
+
+# show dimensions of training and test data
+data.frame(datasets = c("training", "test"),
+           n_rows = c(nrow(training_data), nrow(test_data)), 
+           n_cols = c(ncol(training_data), ncol(test_data))) %>%
+  kable() %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+## 2.3 Model training
+In order to find the kind of ML algorithm best suited for this particular task, different kind of classification algorithms were tested and their accuracy compared. Whenever possible, their parameters were tuned using cross-validation. Training on the training data, prediction and evaluation on the test data were done using the caret package. In this approach, all variables were used to predict the outcome of a lesser or higher chance of a heartattack.  
+
+The tested approaches comprised:  
+
++ Logistic regression
++ Classification tree: tuning for the complexity parameter 
++ Random forest: tuning for mtry
++ k-nearest neighbors (kNN): tuning for k
++ Ensemble of all above mentioned models
+
+# 3 Results
+
+## 3.1 Logistic regression model
+Generally speaking, logistic regression is a most basic ML algorithm for binary outcomes. 
+
+```{r train_log, echo = FALSE, warning = FALSE}
+log_fit <- train(target ~ ., 
+                 data = training_data, 
+                 method = "glm",
+                 family = "binomial")#,
+                 #trControl = trainControl(method = "cv", number = 5))
+log_pred <- predict(log_fit, test_data, type = "raw")
+log_acc <- confusionMatrix(log_pred, test_data$target)$overall["Accuracy"]
+
+# no log transform
+log_fit <- train(target ~ .,
+               data = training_data_nolog,
+               method = "glm",
+               family = "binomial")
+log_pred <- predict(log_fit, test_data_nolog, type = "raw")
+log_acc <- confusionMatrix(log_pred, test_data_nolog$target)$overall["Accuracy"]
+
+#plot(varImp(log_fit))
+
+# make summary table for model accuracy
+model_fit <- tibble(Model = "Logistic regression", Accuracy = round_half_up(log_acc, 4))
+model_fit %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+## 3.2 LDA model
+
+```{r train_lda, echo = FALSE, warning=FALSE}
+lda_fit <- train(target ~ ., 
+                 data = training_data, 
+                 method = "lda")
+lda_pred <- predict(lda_fit, test_data, type = "raw")
+lda_acc <- confusionMatrix(lda_pred, test_data$target)$overall["Accuracy"]
+
+# no log transform
+lda_fit <- train(target ~ ., 
+                 data = training_data_nolog, 
+                 method = "lda")
+lda_pred <- predict(lda_fit, test_data_nolog, type = "raw")
+lda_acc <- confusionMatrix(lda_pred, test_data_nolog$target)$overall["Accuracy"]
+
+# make summary table for model accuracy
+model_fit <- rbind(model_fit, c("LDA",round_half_up(lda_acc, 4)))
+model_fit %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+## 3.3 QDA model  
+
+```{r train_qda, echo = FALSE}
+qda_fit <- train(target ~ ., 
+                 data = training_data, 
+                 method = "qda")
+qda_fit <- train(target ~ ., 
+                 data = training_data_nolog, 
+                 method = "qda")
+qda_pred <- predict(qda_fit, test_data, type = "raw")
+qda_acc <- confusionMatrix(qda_pred, test_data$target)$overall["Accuracy"]
+
+
+# make summary table for model accuracy
+model_fit <- rbind(model_fit, c("QDA",round_half_up(qda_acc, 4)))
+model_fit %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+```{r train_qda, echo = FALSE}
+qda_fit <- train(target ~ ., data = training_data, method = "qda")
+qda_pred <- predict(qda_fit, test_data, type = "raw")
+qda_acc <- confusionMatrix(qda_pred, test_data$target)$overall["Accuracy"]
+
+# make summary table for model accuracy
+model_fit <- rbind(model_fit, c("QDA",round_half_up(qda_acc, 4)))
+model_fit %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+## 3.3 Classification tree model
+tune CP using crossvalidation
+complexity parameter (= minimum set by algorithm for how much the RSS must improve for another partition to be added)
+```{r train_log, echo = FALSE}
+cart_fit <- train(target ~ ., 
+                  data = training_data, 
+                  method = "rpart", 
+                  tuneGrid = data.frame(cp = seq(0.0, 0.1, len = 25)))
+cart_pred <- predict(cart_fit, test_data, type = "raw")
+cart_acc <- confusionMatrix(cart_pred, test_data$target)$overall["Accuracy"]
+
+# no log transform
+cart_fit <- train(target ~ ., 
+                  data = training_data_nolog, 
+                  method = "rpart", 
+                  tuneGrid = data.frame(cp = seq(0.0, 0.1, len = 25)))
+cart_pred <- predict(cart_fit, test_data_nolog, type = "raw")
+cart_acc <- confusionMatrix(cart_pred, test_data_nolog$target)$overall["Accuracy"]
+cart_acc
+
+trellis.par.set(caretTheme())
+plot(cart_fit)
+cart_fit$bestTune
+plot(cart_fit$finalModel, margin = 0.1)
+text(cart_fit$finalModel, cex = 0.75)
+
+# make summary table for model accuracy
+model_fit <- rbind(model_fit, c("CART",round_half_up(cart_acc, 4)))
+model_fit %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+## 3.4 Random forest model
+chose method Rborist to be able to tune both number of randomly selected predictors for splits, which reduces the correlation of trees and in turn improves the prediction accuracy, and the minimal node size, which is the minimal number of nodes a tree must have
+```{r train_rf, echo = FALSE}
+# nodesize <- seq(1, 51, 10)
+# rf_tune_acc <- sapply(nodesize, function(ns){
+#   train(target ~ ., method = "rf", data = training_data,
+#                tuneGrid = data.frame(mtry = 2),
+#                nodesize = ns)$results$Accuracy
+# })
+# qplot(nodesize, rf_tune_acc)
+# rf_fit <- train(target ~ ., method = "rf", 
+#                   data = training_data,
+#                   tuneGrid = data.frame(mtry = 2),
+#                   nodesize = nodesize[which.max(rf_tune_acc)])
+
+
+rf_fit <- train(target ~ ., 
+                method = "Rborist", 
+                data = training_data,
+                tuneGrid = data.frame(predFixed = seq(2, 12, 2), 
+                                     minNode = seq(1, 51, 10)))
+rf_pred <- predict(rf_fit, test_data, type = "raw")
+rf_acc <- confusionMatrix(rf_pred, test_data$target)$overall["Accuracy"]
+
+# no log transform
+rf_fit <- train(target ~ ., 
+                method = "Rborist", 
+                data = training_data_nolog,
+                tuneGrid = data.frame(predFixed = seq(1, 10), 
+                                     minNode = seq(1, 10)))
+rf_fit$bestTune
+plot(rf_fit)
+rf_pred <- predict(rf_fit, test_data_nolog, type = "raw")
+rf_acc <- confusionMatrix(rf_pred, test_data_nolog$target)$overall["Accuracy"]
+rf_acc
+
+
+# make summary table for model accuracy
+model_fit <- rbind(model_fit, c("Random forest",round_half_up(rf_acc, 4)))
+model_fit %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+
+## 3.5 kNN model
+
+```{r train_log, echo = FALSE}
+knn_fit <- train(target ~ ., 
+                 data = training_data, 
+                 method = "knn", 
+                 tuneGrid = data.frame(k = seq(1,51, length = 25)))
+knn_fit$bestTune
+plot(knn_fit)
+knn_pred <- predict(knn_fit, test_data, type = "raw")
+knn_acc <- confusionMatrix(knn_pred, test_data$target)$overall["Accuracy"]
+
+# no log transform
+knn_fit <- train(target ~ ., 
+                 data = training_data_nolog, 
+                 method = "knn", 
+                 tuneGrid = data.frame(k = seq(1,51, length = 25)))
+knn_pred <- predict(knn_fit, test_data_nolog, type = "raw")
+knn_acc <- confusionMatrix(knn_pred, test_data_nolog$target)$overall["Accuracy"]
+knn_acc
+
+# make summary table for model accuracy
+model_fit <- rbind(model_fit, c("kNN",round_half_up(knn_acc, 4)))
+model_fit %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+```
+
+
+## 3.6 Ensemble  
+```{r ensemble, echo = FALSE}
+# make matrix with logical vectors from single predictions
+ens <- cbind(log = log_pred == 1,
+             lda = lda_pred == 1,
+             qda = qda_pred == 1,
+             cart = cart_pred == 1,
+             rf = rf_pred == 1,
+             knn = knn_pred == 1)
+# summarize predictions in ensemble: if more than half (3 out of 5) models predicted a heartattack, then ensembl predicts heartattack
+ens_pred <- as.factor(ifelse(rowMeans(ens) > 0.5, 1, 0))
+ens_acc <- confusionMatrix(ens_pred, test_data$target)$overall["Accuracy"]
+
+# make summary table for model accuracy
+model_fit <- rbind(model_fit, c("Ensemble",round_half_up(ens_acc, 4)))
+model_fit %>%
+  kable(format.args = list(digits = 4)) %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+```
+
+
+# Conclusion
+Ensemble of all models shows the best accuracy. 
+Limitations: many more algorithms to try, also could have tried different combination of single algorithms.
